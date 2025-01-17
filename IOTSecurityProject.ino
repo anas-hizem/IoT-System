@@ -1,6 +1,7 @@
 #include <WiFi.h>
 #include <DHT.h>
 #include <PubSubClient.h>
+#include <mbedtls/aes.h>
 
 #define DHTPIN 4      
 #define DHTTYPE DHT11      
@@ -8,18 +9,18 @@ DHT dht(DHTPIN, DHTTYPE);
 
 #define LEDPIN 15         
 
+// // Replace with your network credentials
+// const char* ssid = "TOPNET_1650";
+// const char* password = "mf3dl239v3";
 
-// Replace with your network credentials
-const char* ssid = "TOPNET_1650";
-const char* password = "mf3dl239v3";
+const char* ssid = "Galaxy S9";
+const char* password = "yessin123";
 
 // MQTT Broker address
-const char* mqttServer = "192.168.1.19";  
+const char* mqttServer = "192.168.43.77";  
 const int mqttPort = 1883;              
 const char* mqttUser = "mqtt_user";       
 const char* mqttPassword = "mqtt_passwrd"; 
-
-
 
 WiFiClient espClient;
 PubSubClient client(espClient);
@@ -95,48 +96,90 @@ void loop() {
   client.loop();
 
   // Read temperature and humidity
-  float temperature = dht.readTemperature();
-  float humidity = dht.readHumidity();
+  float tem = dht.readTemperature();
+  float hum = dht.readHumidity();
 
-  // Check if any of the readings failed
-  if (isnan(temperature) || isnan(humidity)) {
-    Serial.println("Failed to read from DHT sensor!");
+  // Vérifier si la lecture a échoué
+  if (isnan(tem) || isnan(hum)) {
+    Serial.println("Échec de la lecture du capteur !");
     return;
   }
 
-  // Publish temperature and humidity to MQTT topics
-  publishData(temperature, humidity);
+  // Convertir les données en chaînes de caractères
+  char temperature[17];  // 16 caractères + '\0' pour le terminateur de chaîne
+  char humidity[17];  // 16 caractères + '\0' pour le terminateur de chaîne
+
+  dtostrf(tem, 0, 6, temperature);  // Convertir float en string avec 6 décimales
+  dtostrf(hum, 0, 6, humidity);  // Convertir float en string avec 6 décimales
+
+  // S'assurer que la chaîne fait 16 caractères (paddé avec des espaces si nécessaire)
+  if (strlen(temperature) < 16) {
+    int len = strlen(temperature);
+    for (int i = len; i < 16; i++) {
+      temperature[i] = ' ';  // Padded with space
+    }
+    temperature[16] = '\0';  // Ensure null-termination
+  }
+
+  if (strlen(humidity) < 16) {
+    int len = strlen(humidity);
+    for (int i = len; i < 16; i++) {
+      humidity[i] = ' ';  // Padded with space
+    }
+    humidity[16] = '\0';  // Ensure null-termination
+  }
+
+  // Encrypt and publish temperature and humidity
+  encryptAndPublishData(temperature, humidity);
   
   // Wait before next reading
   delay(1000);
 }
 
 
-// Function to publish temperature and humidity
-void publishData(float temperature, float humidity) {
-  char tempString[8];
-  dtostrf(temperature, 1, 2, tempString);
-  client.publish("esp32/temperature", tempString); // Publish temperature
+// Function to encrypt and publish temperature and humidity
+void encryptAndPublishData(char* temperature, char* humidity) {
 
-  char humString[8];
-  dtostrf(humidity, 1, 2, humString);
-  client.publish("esp32/humidity", humString); // Publish humidity
+  // AES encryption key (16 bytes, must be 16 characters for AES-128)
+  const char *key = "1234567890123456";
 
-  Serial.print("Published Temperature: ");
-  Serial.println(temperature);
-  Serial.print("Published Humidity: ");
-  Serial.println(humidity);
+  uint8_t encryptedTemp[16];
+  uint8_t encryptedHum[16];
+
+  // Encrypt the temperature and humidity strings
+  encryptAES(key, temperature, encryptedTemp);
+  encryptAES(key, humidity, encryptedHum);
+
+  // Convert encrypted data to hexadecimal string format
+  char encryptedTempHex[33]; // 32 hex characters + 1 for null terminator
+  char encryptedHumHex[33];
+  hexToString(encryptedTemp, sizeof(encryptedTemp), encryptedTempHex);
+  hexToString(encryptedHum, sizeof(encryptedHum), encryptedHumHex);
+
+  // Publish the encrypted temperature and humidity to MQTT topics
+  client.publish("esp32/encryptedTemperature", encryptedTempHex);
+  client.publish("esp32/encryptedHumidity", encryptedHumHex);
+
+  // Log to Serial Monitor
+  Serial.print("Published Encrypted Temperature: ");
+  Serial.println(encryptedTempHex);
+  Serial.print("Published Encrypted Humidity: ");
+  Serial.println(encryptedHumHex);
 }
 
-// Callback function for handling MQTT messages
-void mqttCallback(char* topic, byte* payload, unsigned int length) {
-  Serial.print("Message arrived on topic: ");
-  Serial.println(topic);
-  String message = "";
-  for (int i = 0; i < length; i++) {
-    message += (char)payload[i];
-  }
-  Serial.print("Message: ");
-  Serial.println(message);
+// Function to encrypt the message using AES
+void encryptAES(const char *key, const char *message, uint8_t *output) {
+  mbedtls_aes_context aes;
+  mbedtls_aes_init(&aes);
+  mbedtls_aes_setkey_enc(&aes, (const unsigned char *)key, 128);
+  mbedtls_aes_crypt_ecb(&aes, MBEDTLS_AES_ENCRYPT, (const unsigned char *)message, output);
+  mbedtls_aes_free(&aes);
+}
 
+// Function to convert data to hexadecimal string
+void hexToString(const uint8_t *data, size_t length, char *output) {
+  for (size_t i = 0; i < length; i++) {
+    sprintf(&output[i * 2], "%02x", data[i]);
+  }
+  output[length * 2] = '\0';  // Null-terminate the string
 }
